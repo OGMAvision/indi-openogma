@@ -1,0 +1,30 @@
+# CMake build trees
+/build*/ 
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+/*.cmake
+
+# Generated from templates (built into build/, but ignore globally too)
+config.h
+indi_openogma.xml
+
+# Binaries / libs
+*.o
+*.a
+*.so
+*.dll
+*.dylib
+indi_openogma
+
+# IDE / OS
+.vscode/
+.idea/
+.github/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
