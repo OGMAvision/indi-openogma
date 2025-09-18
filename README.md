@@ -319,6 +319,80 @@ indi_openogma/
 
 ---
 
+### Adding to the 3rd Party repository
+
+The general process is:
+
+Clone the 3rd party repo
+
+Create a topic branch
+
+Make your changes and commit
+
+Create a pull request
+
+Before creating the pull request, test thoroughly and make sure the code can be built on a separate directory. 
+
+For example:
+
+```
+cd /var/www/indi-dev/build/indi-3rdparty
+rm -rf ./*
+
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DWITH_OPENOGMA=ON \
+      -DWITH_AVALONUD=OFF \
+      -DWITH_GPSD=OFF \
+      /var/www/indi-dev/indi-3rdparty
+
+cmake --build . --target indi_openogma -j"$(nproc)"
+
+sudo cmake --install . --component openogma
+
+```
+
+Test that it installed.
+
+```
+ls -l /usr/local/bin/indi_openogma
+ls -l /usr/share/indi/indi_openogma.xml
+```
+
+Then run the binary
+
+```
+indiserver -v indi_openogma
+```
+
+If any udev rule was changed, don't forget:
+```
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Find what port is being used:
+
+```
+$ ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
+```
+
+You may see something like this:
+```
+crw-rw---- 1 root dialout 166, 0 Sep 17 21:45  /dev/ttyACM0
+```
+
+In that case:
+```
+$ indi_setprop "OpenOGMA Filter Wheel.DEVICE_PORT.PORT=/dev/ttyACM0"
+$ indi_setprop "OpenOGMA Filter Wheel.CONNECTION.CONNECT=On"
+$ indi_getprop "OpenOGMA Filter Wheel.CONNECTION.*"
+
+OpenOGMA Filter Wheel.CONNECTION.CONNECT=On
+OpenOGMA Filter Wheel.CONNECTION.DISCONNECT=Off
+```
+
+After testing it, you can file a pull request with the mainstream 3rd party repository.
 ## Dependencies
 
 ### Required

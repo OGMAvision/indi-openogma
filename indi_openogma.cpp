@@ -3,7 +3,8 @@
 #include "config.h"
 #include "indi_openogma.h"
 #include "libindi/indidevapi.h"
-
+#include <memory>
+#include <any>
 #include <cstring>
 #include <cstdio>
 #include <chrono>
