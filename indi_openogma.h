@@ -132,6 +132,9 @@ private:
 
     enum class Proto { UNKNOWN, FRAMED, LEGACY, TEXT } proto = Proto::UNKNOWN;
 
+    // Tiny command scheduler
+    bool inFlight_ = false; // True after we dispatch a command; cleared when we observe IDLE again
+
     // Command queue for preventing overlapping moves
     std::queue<QueuedCommand> commandQueue;
     static const size_t MAX_QUEUE_SIZE = 2;  // Keep queue small to prevent delays

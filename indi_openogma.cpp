@@ -355,6 +355,12 @@ void openogma::TimerHit()
         // If we were moving/calibrating, publish progress and completion
         if (fwState == FWState::IDLE)
         {
+            // Clear in-flight flag when device returns to IDLE
+            if (inFlight_)
+            {
+                LOG_DEBUG("Command completed (state=IDLE), clearing inFlight");
+                inFlight_ = false;
+            }
             // Check if we just completed firmware auto-calibration after USB reconnect
             if (waitingForCalibration && totalSlots > 0)
             {
@@ -940,24 +946,47 @@ bool openogma::cmdSetPosition(int target)
 
 bool openogma::cmdCalibrate()
 {
+    LOG_INFO("Sending calibration command to firmware...");
+    
     // Retry calibration command since it's ACK-based and safe to repeat
-    return withRetry(2, [&]() -> bool {
+    bool result = withRetry(2, [&]() -> bool {
         int32_t out=0;
         bool ok = false;
-        if (proto == Proto::FRAMED)
-            ok = sendFramed(0x1001, 0, out); // 0 => calibrate
-        else if (proto == Proto::LEGACY)
-            ok = sendLegacy(0x1001, 0, out);
-        else
+        if (proto == Proto::FRAMED || proto == Proto::LEGACY)
+        {
+            // Correct calibration: CMD_POSITION (0x1001) with value -1 triggers full calibration
+            LOGF_INFO("Sending binary calibration: protocol=%s, cmd=0x1001 (CMD_POSITION), value=-1 (calibrate)", 
+                      (proto == Proto::FRAMED) ? "FRAMED" : "LEGACY");
+            ok = (proto == Proto::FRAMED) 
+                ? sendFramed(0x1001, -1, out)  // -1 triggers calibration
+                : sendLegacy(0x1001, -1, out);
+            LOGF_INFO("Binary calibration result: ok=%s, response=%d", ok ? "true" : "false", out);
+        }
+        else // TEXT
+        {
+            LOG_INFO("Sending text calibration: CALIBRATE");
             ok = sendText("CALIBRATE\n", out);
+            LOGF_INFO("Text calibration result: ok=%s, response=%d", ok ? "true" : "false", out);
+        }
         return ok;
     });
+    
+    LOGF_INFO("Calibration command %s", result ? "succeeded" : "failed");
+    return result;
 }
 
 void openogma::enqueueCommand(CommandType type, int target_slot)
 {
-    // If device is idle, execute immediately
-    if (!isDeviceBusy())
+    // CALIBRATE has priority: clear pending moves
+    if (type == CommandType::CALIBRATE && !commandQueue.empty())
+    {
+        drainCommandQueue(); // keep at most last move, but calibration overrides moves
+        while (!commandQueue.empty()) commandQueue.pop();
+    }
+
+    // If device is idle or unknown and nothing is in-flight, execute immediately
+    const bool readyNow = (fwState == FWState::IDLE || fwState == FWState::UNKNOWN) && !inFlight_;
+    if (readyNow)
     {
         LOGF_DEBUG("Device idle, executing command immediately: %s", 
                    (type == CommandType::MOVE_TO_SLOT) ? "MOVE" : "CALIBRATE");
@@ -965,11 +994,23 @@ void openogma::enqueueCommand(CommandType type, int target_slot)
         if (type == CommandType::MOVE_TO_SLOT)
         {
             targetSlot = target_slot;
-            cmdSetPosition(target_slot);
+            // If we don't know slots yet, defer by queuing instead of immediate execute
+            if (totalSlots <= 0)
+            {
+                LOG_DEBUG("Unknown slot count; deferring immediate MOVE and queueing it");
+                commandQueue.push(QueuedCommand(CommandType::MOVE_TO_SLOT, target_slot));
+            }
+            else
+            {
+                inFlight_ = true;
+                cmdSetPosition(target_slot);
+            }
         }
         else if (type == CommandType::CALIBRATE)
         {
             targetSlot = 0;
+            waitingForCalibration = true; // Gate moves until calibration provides slots
+            inFlight_ = true;
             cmdCalibrate();
         }
         return;
@@ -1007,36 +1048,62 @@ void openogma::processQueuedCommands()
         return;
     }
     
-    // Only process commands when device is ready (idle and has valid slot count)
-    const bool deviceReady = (fwState == FWState::IDLE) && (totalSlots > 0);
-    
-    if (!deviceReady || commandQueue.empty())
+    // Process only when device is idle or unknown, and nothing is in flight
+    if (((fwState != FWState::IDLE) && (fwState != FWState::UNKNOWN)) || commandQueue.empty() || inFlight_)
     {
-        if (!deviceReady && !commandQueue.empty())
+        if ((fwState != FWState::IDLE && fwState != FWState::UNKNOWN) && !commandQueue.empty())
         {
-            LOGF_DEBUG("Device not ready for commands: state=%d, slots=%d (queue size: %zu)", 
-                       static_cast<int>(fwState), totalSlots, commandQueue.size());
+            LOGF_DEBUG("Device busy (state=%d), will process %zu queued command(s) once idle", 
+                       static_cast<int>(fwState), commandQueue.size());
         }
         return;
     }
-        
-    QueuedCommand cmd = commandQueue.front();
-    commandQueue.pop();
-    
+
+    // Peek at the next command, but only pop when we actually dispatch it
+    const QueuedCommand &cmd = commandQueue.front();
+
+    // Decide if command can run now
+    bool canRun = false;
+    if (cmd.type == CommandType::CALIBRATE)
+    {
+        // Always allow calibration when idle, even if slot count is unknown (0)
+        canRun = true;
+    }
+    else if (cmd.type == CommandType::MOVE_TO_SLOT)
+    {
+        // Only move when we have a valid slot count
+        canRun = (totalSlots > 0);
+        if (!canRun)
+        {
+            LOG_DEBUG("Deferring MOVE command until slot count becomes known (waiting for calibration)");
+            return; // keep it queued; will retry after calibration updates slot count
+        }
+    }
+
+    if (!canRun)
+        return;
+
+    // Dispatch
     LOGF_INFO("Processing queued command: %s%s", 
               (cmd.type == CommandType::MOVE_TO_SLOT) ? "MOVE to slot " : "CALIBRATE",
               (cmd.type == CommandType::MOVE_TO_SLOT) ? std::to_string(cmd.target_slot).c_str() : "");
-    
+
     if (cmd.type == CommandType::MOVE_TO_SLOT)
     {
         targetSlot = cmd.target_slot;
+        inFlight_ = true;
         cmdSetPosition(cmd.target_slot);
     }
-    else if (cmd.type == CommandType::CALIBRATE)
+    else // CALIBRATE
     {
         targetSlot = 0;
+        waitingForCalibration = true;
+        inFlight_ = true;
         cmdCalibrate();
     }
+
+    // Remove the command after dispatching
+    commandQueue.pop();
 }
 
 void openogma::clearCommandQueue()
