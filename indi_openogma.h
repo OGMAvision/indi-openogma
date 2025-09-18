@@ -72,6 +72,8 @@ private:
     uint8_t crcXor(const uint8_t *buf, size_t n);
     bool readExact(uint8_t *buf, size_t n, int timeout_ms);
     bool writeExact(const uint8_t *buf, size_t n);
+    // Discard ASCII/debug noise until 0xA5 is seen; consumes the magic byte.
+    bool syncToMagic(int timeout_ms, int maxScanBytes = 512);
 
     // ---- High-level ops ----
     bool cmdGetSlots(int &slots);

@@ -164,10 +164,11 @@ bool openogma::detectProtocol()
     
     // Try FRAMED protocol first (preferred - most robust with CRC validation)
     LOG_DEBUG("Trying FRAMED protocol (preferred binary with CRC)...");
-    uint8_t s=0,p=0,sl=0;
-    if (getState(s,p,sl))
+    int32_t slotsProbe = 0;
+    if (sendFramed(0x1002, 0, slotsProbe) && slotsProbe > 0)
     {
         LOG_INFO("Protocol selected: FRAMED (binary with CRC).");
+        totalSlots = slotsProbe; // sane
         proto = Proto::FRAMED;
         return true;
     }
@@ -241,9 +242,9 @@ bool openogma::tryProtocolUpgrade()
         writeExact(wakeUp, sizeof(wakeUp));
         usleep(150000); // 150ms for device processing
         
-        // Test FRAMED with SLOTS command (0x1003)
+        // Test FRAMED with SLOTS command (0x1002)
         int32_t slots = 0;
-        if (sendFramed(0x1003, 0, slots) && slots > 0) {
+        if (sendFramed(0x1002, 0, slots) && slots > 0) {
             proto = Proto::FRAMED;
             LOG_INFO("Protocol successfully upgraded to FRAMED (binary with CRC).");
             return true;
@@ -641,6 +642,59 @@ bool openogma::writeExact(const uint8_t *buf, size_t n)
     return true;
 }
 
+// Discard any ASCII/debug text and non-magic bytes until we see 0xA5 (frame magic).
+// Returns true if 0xA5 was found before timeout/scan limit. The magic byte is consumed.
+bool openogma::syncToMagic(int timeout_ms, int maxScanBytes)
+{
+    int scanned = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    uint8_t b = 0;
+
+    while (std::chrono::steady_clock::now() < deadline && scanned < maxScanBytes)
+    {
+        int nbytes_read = 0;
+        int result = tty_read(serialConnection->getPortFD(),
+                              reinterpret_cast<char*>(&b),
+                              1,
+                              0, // non-blocking poll
+                              &nbytes_read);
+
+        if (result != TTY_OK)
+        {
+            if (isSerialError(result))
+            {
+                LOGF_ERROR("syncToMagic: serial error %d while scanning for magic", result);
+                beginRecovery("serial error during sync");
+                return false;
+            }
+            // Not an error we care about for sync; just wait a bit
+            usleep(1000);
+            continue;
+        }
+
+        if (nbytes_read <= 0)
+        {
+            // No data right now; yield briefly
+            usleep(1000);
+            continue;
+        }
+
+        scanned++;
+
+        // Skip printable ASCII and common whitespace used by debug logs
+        if ((b >= 0x20 && b <= 0x7E) || b == '\n' || b == '\r' || b == '\t')
+            continue;
+
+        if (b == 0xA5)
+            return true; // Found frame start
+
+        // Non-ASCII junk that isn't magic: keep scanning
+    }
+
+    LOGF_DEBUG("syncToMagic: aborted after scanning %d bytes without finding 0xA5", scanned);
+    return false;
+}
+
 // Reads the header first, then read the rest based on the Length byte.
 bool openogma::sendFramed(uint32_t cmd, int32_t val, int32_t &outVal)
 {
@@ -656,64 +710,63 @@ bool openogma::sendFramed(uint32_t cmd, int32_t val, int32_t &outVal)
 
     usleep(50 * 1000); // 50 ms pause like ASCOM
 
-    // --- sync to frame start (hunt for 0xA5) ---
-    uint8_t magic = 0;
-    int bytesScanned = 0;
-    const int maxScanBytes = 128; // Guard against infinite scanning
+    // Robust framed read with binary-first resync and CRC guard
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
-    while (std::chrono::steady_clock::now() < deadline && bytesScanned < maxScanBytes)
+    while (std::chrono::steady_clock::now() < deadline)
     {
-        if (!readExact(&magic, 1, 200)) continue;
-        bytesScanned++;
-        if ((magic >= 0x20 && magic <= 0x7E) || magic == 0x0A || magic == 0x0D) continue;
-        if (magic == 0xA5) break;
-    }
-    if (magic != 0xA5)
-    {
-        if (bytesScanned >= maxScanBytes)
-            LOGF_DEBUG("Frame sync aborted: scanned %d bytes without finding 0xA5 magic", maxScanBytes);
-        return false;
-    }
+        // Sync to magic, discarding ASCII/debug noise
+        if (!syncToMagic(500 /*ms*/, 512))
+            continue; // try again until deadline
 
-    uint8_t len = 0;
-    if (!readExact(&len, 1, 1000))
-        return false;
+        uint8_t len = 0;
+        if (!readExact(&len, 1, 500))
+            continue; // resync again
 
-    const size_t total = 2 + len + 1;
-    if (total != 11 && total != 15)
-        return false;
-
-    std::vector<uint8_t> rx(total);
-    rx[0] = 0xA5; rx[1] = len;
-    if (!readExact(rx.data() + 2, total - 2, 1000))
-        return false;
-
-    if (rx.back() != crcXor(rx.data(), total - 1))
-    {
-        // Log first 16 bytes for CRC debugging (avoid giant logs)
-        size_t dumpLen = std::min(total, static_cast<size_t>(16));
-        std::string hexDump;
-        for (size_t i = 0; i < dumpLen; i++)
+        // Total frame size includes header (2) + payload (len) + crc (1)
+        const size_t total = 2 + len + 1;
+        if (total != 11 && total != 15)
         {
-            char hex[4];
-            snprintf(hex, sizeof(hex), "%02X ", rx[i]);
-            hexDump += hex;
+            LOGF_DEBUG("sendFramed: invalid length %u, resyncing", (unsigned)len);
+            continue; // resync to next magic
         }
-        if (total > 16) hexDump += "...";
-        LOGF_DEBUG("CRC mismatch in frame (len=%d): %s", len, hexDump.c_str());
-        return false;
+
+        std::vector<uint8_t> rx(total);
+        rx[0] = 0xA5; rx[1] = len;
+        if (!readExact(rx.data() + 2, total - 2, 800))
+            continue; // resync to next frame
+
+        // CRC check
+        if (rx.back() != crcXor(rx.data(), total - 1))
+        {
+            // Log first few bytes for debugging then try to resync
+            size_t dumpLen = std::min(total, static_cast<size_t>(16));
+            std::string hexDump;
+            for (size_t i = 0; i < dumpLen; i++)
+            {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%02X ", rx[i]);
+                hexDump += hex;
+            }
+            if (total > 16) hexDump += "...";
+            LOGF_DEBUG("sendFramed: CRC mismatch (len=%u): %s — resyncing", (unsigned)len, hexDump.c_str());
+            continue; // keep hunting for a good frame until deadline
+        }
+
+        // Good frame
+        if (len == 0x08)
+        {
+            std::memcpy(&outVal, rx.data() + 6, 4);
+        }
+        else // len == 0x0C
+        {
+            uint8_t state = rx[6], pos = rx[7], slots = rx[8];
+            outVal = (int32_t)((uint32_t)state | ((uint32_t)pos << 8) | ((uint32_t)slots << 16));
+        }
+        return true;
     }
 
-    if (len == 0x08)
-    {
-        std::memcpy(&outVal, rx.data() + 6, 4);
-    }
-    else // len == 0x0C
-    {
-        uint8_t state = rx[6], pos = rx[7], slots = rx[8];
-        outVal = (int32_t)((uint32_t)state | ((uint32_t)pos << 8) | ((uint32_t)slots << 16));
-    }
-    return true;
+    LOG_DEBUG("sendFramed: timed out waiting for valid framed response");
+    return false;
 }
 
 bool openogma::sendLegacy(uint32_t cmd, int32_t val, int32_t &outVal)
