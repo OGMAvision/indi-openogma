@@ -46,6 +46,7 @@ protected:
     // Property handlers
     bool ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n) override;
     bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n) override;
+    bool ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n) override;
 
 private:
     // ---- Retry helper for transient USB/serial issues ----
@@ -108,6 +109,7 @@ private:
     INDI::PropertyNumber FilterSlotNP {1};
     INDI::PropertyText   FilterNameTP {8};
     INDI::PropertySwitch ConnectionSP {2};
+    INDI::PropertySwitch CalibrationSP {1};
 
     int totalSlots = 0;
     int currentSlot = 0;  // 1-based for INDI consistency

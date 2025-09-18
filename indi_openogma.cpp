@@ -66,6 +66,11 @@ bool openogma::initProperties()
     FilterNameTP.fill(getDeviceName(), "FILTER_NAME", "Filter Names", FILTER_TAB, IP_RW, 60, IPS_IDLE);
     defineProperty(FilterNameTP);
 
+    // Calibration button
+    CalibrationSP[0].fill("CALIBRATE", "Calibrate", ISS_OFF);
+    CalibrationSP.fill(getDeviceName(), "CALIBRATION", "Calibration", MAIN_CONTROL_TAB, IP_RW, ISR_ATMOST1, 60, IPS_IDLE);
+    defineProperty(CalibrationSP);
+
     setDriverInterface(FILTER_INTERFACE); // advertise as filter wheel
     SetTimer(1000);
     return true;
@@ -369,6 +374,15 @@ void openogma::TimerHit()
                 IDMessage(getDeviceName(), "Calibration complete. Ready.");
             }
             
+            // Update calibration switch state when returning to idle
+            if (CalibrationSP.getState() == IPS_BUSY)
+            {
+                CalibrationSP[0].setState(ISS_OFF);
+                CalibrationSP.setState(IPS_OK);
+                CalibrationSP.apply();
+                LOG_DEBUG("Calibration switch returned to OK state");
+            }
+            
             if (targetSlot > 0 && currentSlot == targetSlot)
                 LOG_INFO("Move complete.");
             targetSlot = 0;
@@ -530,6 +544,33 @@ bool openogma::ISNewText(const char *dev, const char *name, char *texts[], char 
     }
     
     return INDI::DefaultDevice::ISNewText(dev, name, texts, names, n);
+}
+
+bool openogma::ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n)
+{
+    if (!isConnected() || strcmp(dev, getDeviceName())) 
+        return INDI::DefaultDevice::ISNewSwitch(dev, name, states, names, n);
+
+    if (CalibrationSP.isNameMatch(name))
+    {
+        CalibrationSP.update(states, names, n);
+        
+        // Check if the calibrate switch was turned on
+        if (CalibrationSP[0].getState() == ISS_ON)
+        {
+            enqueueCommand(CommandType::CALIBRATE);
+            LOG_INFO("Calibration command queued from calibration button.");
+            CalibrationSP.setState(IPS_BUSY);
+            CalibrationSP.apply();
+            return true;
+        }
+        
+        CalibrationSP.setState(IPS_OK);
+        CalibrationSP.apply();
+        return true;
+    }
+    
+    return INDI::DefaultDevice::ISNewSwitch(dev, name, states, names, n);
 }
 
 // -------------------------- Protocol --------------------------
