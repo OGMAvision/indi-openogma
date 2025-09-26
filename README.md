@@ -2,26 +2,34 @@
 
 This code provides the **INDI driver for the OpenOGMA Filter Wheel**, an astrophotography accessory manufactured by **OGMAVision**. It allows Linux, macOS, and other INDI-compatible systems (e.g., KStars/Ekos) to control the OpenOGMA filter wheel hardware over USB.
 
----
+- **Device**: OpenOgma Filter Wheel
+- **Connection**: USB CDC (Serial)
+- **Baud**: 115200
+- **INDI Interface**: Filter Wheel
 
 ## Features
 
-- **Automatic Protocol Detection**: Supports three communication protocols with automatic detection
-- **Filter Control**: Slot selection (`FILTER_SLOT` property), calibration, and state monitoring
-- **Real-time Status**: Live updates of wheel position and movement state
-- **Robust Communication**: Enhanced error handling with comprehensive logging
-- **INDI Standard Compliance**: Fully compatible with all INDI clients:
-  - KStars / Ekos
-  - CCDciel
-  - INDI Web Manager
-  - PHD2
-  - And more...
+- Auto protocol detection: **FRAMED → TEXT** (FRAMED preferred | TEXT for dvelopment).
+- Robust framed RX with magic resync + CRC.
+- Atomic state via `GET_STATE (0x1003)` (state/position/slots).
+- Calibration flow:
+  - Firmware auto-calibrates on power-up (USB plug).
+  - Driver exposes a **Calibrate Now** button.
+  - Driver queues user moves until wheel is IDLE & calibrated.
+- Safe UX:
+  - Reports **last known slot** while moving (hides “255/unknown”).
+  - 1-based slots in UI, 0-based on the wire.
+- Hot-unplug recovery:
+  - Detects serial errors, **auto-reconnects**, re-handshakes,
+    waits out firmware’s auto-calibration, then resumes.
 
 ---
 
 ## Quick Start
 
-### Installation
+You can clone and build the just the repo for this driver. Or, you can build it with the rest of the 3rd party drivers, as explained in the Development section later in this document.
+
+### Quick Installation (just the OpenOGMA driver)
 ```bash
 git clone https://github.com/OGMAVision/indi-openogma.git
 cd indi-openogma
@@ -85,11 +93,7 @@ The driver implements intelligent protocol detection that automatically identifi
    - CRC checksums for data integrity
    - Most robust for production use
 
-2. **LEGACY Protocol** (Backward Compatible)
-   - Simple 8-byte binary format
-   - Compatible with older firmware
-
-3. **TEXT Protocol** (Development/Debugging)
+2. **TEXT Protocol** (Development/Debugging)
    - Human-readable commands
    - Easy to test manually
    - CRLF line endings (`\r\n`)
@@ -100,8 +104,8 @@ The driver implements intelligent protocol detection that automatically identifi
 Driver Start → Serial Connection → Protocol Detection → Device Ready
      ↓               ↓                    ↓                 ↓
   Initialize      Open Port         Try FRAMED          Get Status
-  Properties   → Set Baud Rate  → Try LEGACY       → Start Polling
-               → Handshake       → Try TEXT        → Ready for Use
+  Properties   → Set Baud Rate  → Try TEXT         → Start Polling
+               → Handshake                             → Ready for Use
 ```
 
 ### Protocol Upgrade
@@ -109,7 +113,7 @@ Driver Start → Serial Connection → Protocol Detection → Device Ready
 The driver includes an intelligent **one-shot upgrade** mechanism that automatically attempts to upgrade the device to the best available protocol:
 
 - **Automatic Detection**: During idle periods (every 5 minutes), the driver checks if a better protocol is available
-- **FRAMED Priority**: If currently using LEGACY or TEXT, attempts to upgrade to FRAMED protocol
+- **FRAMED Priority**: If currently using TEXT, attempts to upgrade to FRAMED protocol
 - **Silent Operation**: Upgrades happen transparently without user intervention
 - **Fail-Safe**: If upgrade fails, driver continues with the current working protocol
 - **No Interruption**: Upgrades only occur when the filter wheel is idle (not moving)
@@ -146,16 +150,7 @@ The driver includes comprehensive error handling and logging:
   - 128-byte scan guard to prevent infinite searching
   - CRC failure debugging with hexdump (first 16 bytes)
 
-### 2. LEGACY Protocol (8 bytes)
-
-**Format:**
-```
-[CommandID(4)][Value(4)]
-```
-
-**Use Case:** Backward compatibility with older firmware
-
-### 3. TEXT Protocol (CRLF-terminated)
+### 2. TEXT Protocol (CRLF-terminated)
 
 **Commands:**
 | Command | Description | Example Response |
@@ -205,7 +200,7 @@ Available in code (change in `initProperties()`):
 - `B_19200` - 19,200 bps  
 - `B_38400` - 38,400 bps
 - `B_57600` - 57,600 bps
-- `B_115200` - 115,200 bps (default)
+- `B_115200` - 115,200 bps (default - expected by the firmware)
 - `B_230400` - 230,400 bps
 
 ### Timeouts
@@ -271,34 +266,6 @@ journalctl -f -u indiserver
 
 ## Development
 
-### Building for Development
-
-```bash
-# Debug build
-mkdir build-debug && cd build-debug
-cmake -DCMAKE_BUILD_TYPE=Debug ..
-make -j$(nproc)
-
-# Install locally for testing
-sudo make install
-```
-
-### Debugging
-
-**With GDB:**
-```bash
-gdb --args indiserver -v indi_openogma
-(gdb) set follow-fork-mode child
-(gdb) run
-```
-
-**Debug Logging:**
-The driver includes extensive debug logging. Look for:
-- `Starting handshake with OpenOGMA Filter Wheel...`
-- `Protocol detected: [FRAMED|LEGACY|TEXT]`
-- `sendText: sending 'SLOTS\n' (7 bytes)`
-- `readExact: attempting to read X bytes with Y second timeout`
-
 ### Code Structure
 
 ```
@@ -314,7 +281,7 @@ indi_openogma/
 **Key Methods:**
 - `Handshake()`: Connection and protocol detection
 - `detectProtocol()`: Auto-detection of communication protocol
-- `sendFramed/sendLegacy/sendText()`: Protocol-specific communication
+- `sendFramed/sendText()`: Protocol-specific communication
 - `TimerHit()`: Periodic status polling
 
 ---
@@ -346,7 +313,23 @@ This section provides guidance for maintainers who want to integrate the OpenOGM
    - Test installation and functionality
    - Validate INDI property compliance
 
-### Build Testing
+### Build and Testing
+
+### Building for Development
+
+Create a directory outside the repository.
+
+```bash
+# Debug build
+mkdir build-debug && cd build-debug
+cmake -DCMAKE_BUILD_TYPE=Debug ..
+make -j$(nproc)
+
+# Install locally for testing
+sudo make install
+```
+
+### Building before a releasing
 
 Before submitting a pull request, thoroughly test the integration build:
 
@@ -382,6 +365,21 @@ ls -l /usr/share/indi/indi_openogma.xml
 # Verify driver startup
 indiserver -v indi_openogma
 ```
+### Debugging
+
+**With GDB:**
+```bash
+gdb --args indiserver -v indi_openogma
+(gdb) set follow-fork-mode child
+(gdb) run
+```
+
+**Debug Logging:**
+The driver includes extensive debug logging. Look for:
+- `Starting handshake with OpenOGMA Filter Wheel...`
+- `Protocol detected: [FRAMED|TEXT]`
+- `sendText: sending 'SLOTS\n' (7 bytes)`
+- `readExact: attempting to read X bytes with Y second timeout`
 
 ### System Integration Testing
 
@@ -415,24 +413,6 @@ indiserver -v indi_openogma
    OpenOGMA Filter Wheel.CONNECTION.DISCONNECT=Off
    ```
 
-### Quality Assurance Checklist
-
-- [ ] Driver builds cleanly without warnings
-- [ ] All INDI property types function correctly
-- [ ] Protocol detection works across all supported modes
-- [ ] Error handling gracefully manages connection failures
-- [ ] Memory leaks and resource cleanup verified
-- [ ] Cross-platform compatibility tested (where applicable)
-- [ ] Documentation updated and accurate
-
-### Submission Guidelines
-
-1. **Code Review**: Ensure code follows INDI project standards
-2. **Testing Documentation**: Include test results and validation steps
-3. **Pull Request**: Submit with clear description of changes and benefits
-4. **Maintenance**: Be prepared to address review feedback and maintain the driver
-
-For questions about integration, consult the [INDI Developer Documentation](https://indilib.org/develop.html) or reach out on the [INDI Forum](https://indilib.org/forum/).
 ## Dependencies
 
 ### Required
@@ -440,20 +420,11 @@ For questions about integration, consult the [INDI Developer Documentation](http
 - **CMake** (>= 3.5)
 - **GCC/G++** with C++11 support
 
-### INDI Headers Used
-- `libindi/defaultdevice.h` - Base device class
-- `libindi/indicom.h` - TTY communication functions
-- `libindi/connectionplugins/connectionserial.h` - Serial connection
-- `libindi/indipropertytext.h` - Text properties
-- `libindi/indipropertynumber.h` - Number properties
-
----
-
 ## License
 
 This driver is released under the **Affero GNU General Public License v3 (AGPLv3)**.
 
-See the [LICENSE](./LICENSE) file for full terms.
+See the [LICENSE.txt](./LICENSE.txt) file for full terms.
 
 ---
 
