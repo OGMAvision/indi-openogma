@@ -27,48 +27,31 @@ This code provides the **INDI driver for the OpenOGMA Filter Wheel**, an astroph
 
 ## Quick Start
 
-You can clone and build the just the repo for this driver. Or, you can build it with the rest of the 3rd party drivers, as explained in the Development section later in this document.
-
-### Quick Installation (just the OpenOGMA driver)
-```bash
-git clone https://github.com/OGMAVision/indi-openogma.git
-cd indi-openogma
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-sudo make install
-sudo ldconfig
-```
-
-### Usage
+## Usage
 1. **Connect your OpenOGMA Filter Wheel** via USB
-2. **Start the INDI server**:
-   ```bash
-   indiserver indi_openogma
-   ```
+2. **Start the INDI server**
 3. **In your INDI client** (e.g., KStars/Ekos):
    - Add a Filter Wheel device
    - Select "OpenOGMA Filter Wheel"
    - Choose the correct serial port (usually `/dev/ttyACM0` or `/dev/ttyUSB0`)
    - Click Connect
 
-### Basic Operations
-- **Change Filter**: Set `FILTER_SLOT` to desired position (1-8)
+## Basic Operations
+- **Change Filter**: Set `FILTER_SLOT` to desired position (1-7)
 - **Calibrate**: Set `FILTER_SLOT` to `0` to start calibration
 - **Monitor Status**: Watch the device state (IDLE/MOVING/CALIBRATING/ERROR)
 - **Filter Names**: Automatically sized to match your wheel's slot count
 
-### Smart Property Management
+## Smart Property Management
 
 The driver intelligently manages filter properties to match your specific wheel configuration:
 
 - **Auto-Sizing**: After calibration, `FILTER_NAME` entries are automatically created to exactly match your wheel's slot count
-- **Name Preservation**: Existing filter names are preserved when switching between wheels or reconnecting
 - **No Confusion**: Moving from a 7-slot to 5-slot wheel automatically hides extra properties
-- **Reasonable Bounds**: Safety limits (1-16 slots) prevent excessive property creation
+- **Reasonable Bounds**: Safety limits (1-7 slots) prevent excessive property creation
 - **Seamless Switching**: Hot-swapping different filter wheels "just works" without manual configuration
 
-### INDI-Compliant Position Handling
+## INDI-Compliant Position Handling
 
 The driver implements clean position normalization following INDI standards:
 
@@ -158,7 +141,7 @@ The driver includes comprehensive error handling and logging:
 | `CALIBRATE\r\n` | Start calibration | `OK` |
 | `POS 3\r\n` | Move to position 3 | `OK` |
 | `POS\r\n` | Get current position | `3` |
-| `SLOTS\r\n` | Get total slots | `8` |
+| `SLOTS\r\n` | Get total slots | `7` |
 | `STATUS\r\n` | Get state code | `0` (IDLE) |
 
 **Important:** The driver automatically adds `\r\n` (CRLF) to all text commands, regardless of input format.
@@ -187,21 +170,11 @@ The driver includes comprehensive error handling and logging:
 ### Serial Settings
 
 The driver automatically configures:
-- **Baud Rate**: 115,200 bps (default, adjustable in code)
+- **Baud Rate**: 115,200 bps (default, expected by firmware)
 - **Data Bits**: 8
 - **Parity**: None
 - **Stop Bits**: 1
 - **Flow Control**: None
-
-### Supported Baud Rates
-
-Available in code (change in `initProperties()`):
-- `B_9600` - 9,600 bps
-- `B_19200` - 19,200 bps  
-- `B_38400` - 38,400 bps
-- `B_57600` - 57,600 bps
-- `B_115200` - 115,200 bps (default - expected by the firmware)
-- `B_230400` - 230,400 bps
 
 ### Timeouts
 
@@ -315,40 +288,53 @@ This section provides guidance for maintainers who want to integrate the OpenOGM
 
 ### Build and Testing
 
+This section covers building the OpenOGMA driver as part of the INDI 3rd Party repository for development and testing purposes.
+
+### Prerequisites
+
+Before building, ensure you have the INDI 3rd Party repository set up:
+
+```bash
+# Clone the INDI 3rd party repository
+git clone https://github.com/indilib/indi-3rdparty.git
+cd indi-3rdparty
+
+# Create a feature branch (if developing)
+git checkout -b feature/openogma-driver
+```
+
 ### Building for Development
 
-Create a directory outside the repository.
+For active development work, create a debug build with detailed logging and symbols:
+
+Note: (Type = Debug)
 
 ```bash
 # Debug build
-mkdir build-debug && cd build-debug
+mkdir build && cd build
+rm -rf ./*
 cmake -DCMAKE_BUILD_TYPE=Debug ..
 make -j$(nproc)
 
 # Install locally for testing
-sudo make install
+sudo cmake --install . --component openogma
+sudo ldconfig
 ```
 
-### Building before a releasing
+### Building for Release Testing
 
-Before submitting a pull request, thoroughly test the integration build:
+Before submitting a pull request, thoroughly test the integration build with release settings:
+
+Note (Type = Release)
 
 ```bash
 # Clean build environment
-cd /var/www/indi-dev/build/indi-3rdparty
+cd /var/www/indi-dev/build
 rm -rf ./*
+cmake -DCMAKE_BUILD_TYPE=Relase ..
+make -j$(nproc)
 
-# Configure with OpenOGMA enabled
-cmake -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/usr/local \
-      -DWITH_OPENOGMA=ON \
-      -DWITH_AVALONUD=OFF \
-      -DWITH_GPSD=OFF \
-      /var/www/indi-dev/indi-3rdparty
-
-# Build and install
-cmake --build . --target indi_openogma -j"$(nproc)"
-sudo cmake --install . --component openogma
+sudo make install
 ```
 
 ### Installation Verification
