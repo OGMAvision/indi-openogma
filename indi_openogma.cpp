@@ -141,7 +141,7 @@ bool openogma::Handshake()
                proto == Proto::LEGACY ? "LEGACY" :
                proto == Proto::TEXT   ? "TEXT"   : "UNKNOWN"),
               totalSlots,
-              lastKnownSlot > 0 ? lastKnownSlot : currentSlot);
+              currentSlot);
 
     // Query total slots from the device
     int slots = 0;
@@ -154,13 +154,14 @@ bool openogma::Handshake()
         // Update FilterSlotNP range
         FilterSlotNP[0].setMin(1);
         FilterSlotNP[0].setMax(totalSlots);
-        FilterSlotNP[0].setValue(currentSlot); // or currentSlot if known
+        FilterSlotNP[0].setValue(currentSlot); // reflect device state; do NOT call SelectFilter()
         FilterSlotNP.apply();
 
         // Resize filter names
         updateFilterNames(totalSlots);
     }
-
+    // We just published the device's actual slot; ignore the first client echo.
+    suppressStartupSlotApply = true;
     return true;
 }
 
@@ -455,7 +456,15 @@ bool openogma::ISNewNumber(const char *dev, const char *name, double values[], c
     if (!isConnected() || strcmp(dev, getDeviceName()))
         return INDI::FilterWheel::ISNewNumber(dev, name, values, names, n);
 
-    // Let the FilterWheel base class handle filter slot changes
+    // One-time suppression of the saved FILTER_SLOT pushed by the client right after connect
+    if (strcmp(name, FilterSlotNP.getName()) == 0 && suppressStartupSlotApply)
+    {
+        suppressStartupSlotApply = false;
+        // Re-assert the actual hardware slot so the UI stays in sync.
+        FilterSlotNP[0].setValue(currentSlot);
+        FilterSlotNP.apply();
+        return true; // handled; no move
+    }
     return INDI::FilterWheel::ISNewNumber(dev, name, values, names, n);
 }
 

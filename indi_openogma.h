@@ -158,6 +158,7 @@ private:
     static constexpr int RECOVERY_TIMEOUT_SEC = 60;  // Give up after 60s
     bool waitingForCalibration = false;   // True when firmware is auto-calibrating after reconnect
     int consecutiveCommFailures = 0;      // Track repeated communication failures
+    bool suppressStartupSlotApply = false; // Swallow first FILTER_SLOT echo after connect
 
     // Protocol upgrade tracking
     time_t lastUpgradeAttempt = 0;
